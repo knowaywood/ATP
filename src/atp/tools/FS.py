@@ -51,7 +51,8 @@ def save2local_no_confirm(path: str, context: str) -> None:
         f.write(context)
         print(f"✅ 文件 '{path}' 写入成功。")
 
-def save2lean(filename: str, lean: str) -> str:
+
+def save2lean_file(filename: str, lean: str) -> str:
     """Save lean code to a file.
 
     Args:

@@ -18,6 +18,7 @@ print("API Client initialized.")
 
 search = DuckDuckGoSearchResults(output_format="list")
 
+
 def ddgs_search(query_str: str) -> str:
     """Search the web for the given query string using DuckDuckGo.
 
@@ -59,5 +60,5 @@ if __name__ == "__main__":
     res = asyncio.run(search_lean_theorem(r"2 is not in \mathbb{Q}"))
     print(res)
 
-    res = ddgs_search("Lean with machine learning site:arxiv.org/pdf")
-    print(res)
+    # res = ddgs_search("Lean with machine learning site:arxiv.org/pdf")
+    # print(res)

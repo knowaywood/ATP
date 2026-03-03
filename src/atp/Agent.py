@@ -1,10 +1,11 @@
 """For Agent."""
 
+import asyncio
 from collections.abc import Callable, Sequence
 from typing import Any
 
 from deepagents import CompiledSubAgent, SubAgent, create_deep_agent
-from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.backends import CompositeBackend, StateBackend
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.store.memory import InMemoryStore
@@ -12,17 +13,38 @@ from langgraph.store.memory import InMemoryStore
 from atp import config as cfg
 
 Inmemory_store = InMemoryStore()
+leanState = cfg.LeanState()
 
-def init_agent():
-    ...
+
+def init_agent(
+    model: str | BaseChatModel,
+    tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
+):
+    """Init agent."""
+    from langchain.agents import create_agent
+
+    from atp.tools.Search import ddgs_search, search_lean_theorem
+
+    if tools is not None:
+        tools = [leanState.update, search_lean_theorem, ddgs_search, *tools]
+    else:
+        tools = [leanState.update, search_lean_theorem, ddgs_search]
+
+    init_agent = create_agent(
+        model=model,
+        system_prompt=cfg.INIT_AGENT_PROMPT,
+        store=Inmemory_store,
+        tools=[leanState.update, search_lean_theorem, ddgs_search],
+    )
+    return init_agent
+
 
 def main_agent(
     model: str | BaseChatModel,
     subagents: list[SubAgent | CompiledSubAgent] | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
 ):
-    """Agent for taking a atp of paper."""
-    # from atp.tools.search import ddgs_search
+    """Agent for taking a atp"""
 
     main_agent = create_deep_agent(
         model=model,
@@ -32,30 +54,28 @@ def main_agent(
         store=Inmemory_store,
         backend=lambda rt: CompositeBackend(
             default=StateBackend(rt),
-            routes={"/memory/": StoreBackend(rt), "/search/": StoreBackend(rt)},
+            routes={"/memory/": StateBackend(rt), "/search/": StateBackend(rt)},
         ),
     )
     return main_agent
 
 
-def search_agent(model: str | BaseChatModel):
+def search_agent(model: str | BaseChatModel, tools: Sequence[BaseTool] | None = None):
     """Agent for search from internet and return the answer."""
-    from deepagents.backends import CompositeBackend, StoreBackend
+    from deepagents.backends import CompositeBackend
     from deepagents.middleware import FilesystemMiddleware
     from langchain.agents import create_agent
 
-    from atp.tools.Search import ddgs_search
-
     agent = create_agent(
         model=model,
-        tools=[ddgs_search],
+        tools=tools,
         system_prompt=cfg.SEARCH_AGENT_PROMPT,
         middleware=[
             FilesystemMiddleware(
-                system_prompt="Use the write your Summarize in /search/ dirctory.",
+                system_prompt="Use this tool to write your Summarize in /search/ dirctory.",
                 backend=lambda rt: CompositeBackend(
                     default=StateBackend(rt),
-                    routes={"/search/": StoreBackend(rt)},
+                    routes={"/search/": StateBackend(rt)},
                 ),
             ),
         ],
@@ -64,9 +84,11 @@ def search_agent(model: str | BaseChatModel):
     return agent
 
 
-def search_subagent(model: str | BaseChatModel):
+def _sub_search_agent(
+    model: str | BaseChatModel, tools: Sequence[BaseTool] | None = None
+):
     """Generate subagent which will be used by main agent."""
-    agent_graph = search_agent(model)
+    agent_graph = search_agent(model, tools)
     agent_subgraph = CompiledSubAgent(
         name="web-search-agent",
         description="An agent that searches the web for information.and the answer will be written to /search/",
@@ -81,13 +103,17 @@ if __name__ == "__main__":
     from dotenv import load_dotenv
     from langchain_community.chat_models import ChatTongyi
 
-    from atp.tools.FS import read_from_local
+    from atp.tools.save_memory import save_chat
 
     load_dotenv()
     model = ChatTongyi(model="qwen-max")
-    subagent = search_subagent(model)
-    mainagent = main_agent(model, subagents=[subagent], tools=[read_from_local])
-    res = mainagent.invoke(
-        {"messages": "读取文件/home/dministrator/git_clone/atp/.env_copy的内容"}
+    # model = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
+    subagent = _sub_search_agent(model)
+    mainagent = init_agent(model)
+    res = asyncio.run(
+        mainagent.ainvoke({"messages": "费马大定理，必须使用ddg_search tool"})
     )
+    save_chat("history.json", res)
+
     pprint(res)
+    pprint(leanState())
