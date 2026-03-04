@@ -252,6 +252,7 @@ dependencies = [
     { name = "lean-interact" },
     { name = "mineru-kie-sdk" },
     { name = "pantograph" },
+    { name = "pydantic" },
 ]
 
 [package.dev-dependencies]
@@ -273,6 +274,7 @@ requires-dist = [
     { name = "lean-interact", specifier = ">=0.11.1" },
     { name = "mineru-kie-sdk", specifier = ">=0.1.1" },
     { name = "pantograph", git = "https://github.com/stanford-centaur/PyPantograph" },
+    { name = "pydantic", specifier = ">=2.12.5" },
 ]
 
 [package.metadata.requires-dev]

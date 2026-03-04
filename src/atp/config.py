@@ -1,12 +1,13 @@
-from typing import Annotated, Any, Sequence, TypedDict
+from typing import Annotated, Any, Sequence
 
 from langchain_core.messages import (
     BaseMessage,
 )
 from langgraph.graph.message import add_messages
+from pydantic import BaseModel
 
 
-class BaseState(TypedDict):
+class BaseState(BaseModel):
     """Base state structure for agent communication."""
 
     messages: Annotated[
@@ -15,29 +16,39 @@ class BaseState(TypedDict):
     ]
 
 
-class AgentState(TypedDict):
+class AgentState(BaseModel):
     initMessages: Annotated[Sequence[BaseMessage], add_messages]
     proverMessages: dict[str, BaseMessage]
     agentMessages: Annotated[Sequence[BaseMessage], add_messages]
 
 
-class LeanState:
-    def __init__(self) -> None:
-        self.query: str | None = None
-        self.background: str | None = None
-        self.leanQuery: str | None = None
-        self.leanTheorem: str | None = None
+class SearchResult(BaseModel):
+    name: str
+    module: str
+    docstring: str | None
+    source_text: str
+    dependencies: str | None
+    informalization: str | None
 
-    def update(self, field_name: str, value):
+
+class LeanState(BaseModel):
+    query: str | None = None
+    background: str | None = None
+    leanQuery: list["SearchResult"] | None = None
+    leanTheorem: str | None = None
+
+    def update(self, field_name: str, value: Any):
         """Update the value of a field in the object."""
         if hasattr(self, field_name):
             setattr(self, field_name, value)
-            print(f"updated field {field_name} to {value}")
+            print(f"updated field {field_name}")
+            return True
         else:
             print(f"Warning: Field '{field_name}' does not exist!")
+            return False
 
-    def __call__(self) -> Any:
-        return self.__dict__
+    def __call__(self) -> dict[str, Any]:
+        return self.model_dump()
 
 
 INIT_AGENT_PROMPT: str = """
@@ -47,10 +58,18 @@ Your mission is to prepare a rich, accurate context state (`LeanState`) to help 
 
 ### The State Object (`LeanState`)
 You interact with the following state dictionary:
-- `query`: The natural language mathematical problem.
-- `leanQuery`: The formalized theorem statement in Lean syntax.
-- `background`: Summarized mathematical background and definitions.
-- `leanTheorem`: Relevant Mathlib theorems, signatures, and necessary imports.
+- `query`: str | None = None "The natural language mathematical problem."
+- `leanQuery`: str | None = None "The formalized theorem statement in Lean syntax."
+- `background`: list[SearchResult] | None = None "Summarized mathematical background and definitions."
+- `leanTheorem`: str | None = None "Relevant Mathlib theorems, signatures, and necessary imports."
+where
+    SearchResult: A dictionary containing search results. Each result includes:
+        - name: str "Fully qualified Lean name (e.g., 'Nat.add')."
+        - module: str "Module name (e.g., 'Mathlib.Data.List.Basic')."
+        - docstring: str | None "Documentation string from the source code, if available."
+        - source_text: str "The actual Lean source code for this declaration."
+        - dependencies: str | None "JSON array of declaration names this declaration depends on."
+        - informalization: str | None "Natural language description of the declaration."
 
 ### Step-by-Step Workflow
 You must follow this exact sequence to complete your task:
@@ -83,6 +102,7 @@ You must follow this exact sequence to complete your task:
 - `search_lean_theorem`: Queries the Lean/Mathlib database for exact theorem statements.
 - `ddgs_search`: Searches the web for general mathematical definitions.
 - `retriever_tool`: Searches the internal knowledge base for specific context.
+
 """
 MAIN_AGENT_PROMPT = """"""
 

@@ -19,6 +19,7 @@ dependencies = [
     "lean-interact>=0.11.1",
     "mineru-kie-sdk>=0.1.1",
     "pantograph",
+    "pydantic>=2.12.5",
 ]
 
 [build-system]

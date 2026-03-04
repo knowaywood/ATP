@@ -34,7 +34,7 @@ def init_agent(
         model=model,
         system_prompt=cfg.INIT_AGENT_PROMPT,
         store=Inmemory_store,
-        tools=[leanState.update, search_lean_theorem, ddgs_search],
+        tools=tools,
     )
     return init_agent
 
@@ -110,9 +110,7 @@ if __name__ == "__main__":
     # model = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
     subagent = _sub_search_agent(model)
     mainagent = init_agent(model)
-    res = asyncio.run(
-        mainagent.ainvoke({"messages": "费马大定理，必须使用ddg_search tool"})
-    )
+    res = asyncio.run(mainagent.ainvoke({"messages": "费马大定理"}))
     save_chat("history.json", res)
 
     pprint(res)
