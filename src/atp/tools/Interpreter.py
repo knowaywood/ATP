@@ -1,11 +1,20 @@
-import asyncio
+"""Small local probe for the lean-interact backend."""
 
-import pantograph as ptg
+from __future__ import annotations
 
-server = ptg.Server(project_path="./ATP")
+from atp.lean_executor import LeanExecutor
 
 
-server = asyncio.run(server.create())
-state0 = asyncio.run(server.goal_start_async("forall (p q: Prop), Or p q -> Or q p"))
-
-print(state0)
+if __name__ == "__main__":
+    executor = LeanExecutor(project_path="./ATP", imports=["ATP"], timeout=60)
+    try:
+        result = executor.run_script(
+            "forall (p q : Prop), Or p q -> Or q p",
+            [
+                "intro p q h",
+                "cases h with | inl hp => exact Or.inr hp | inr hq => exact Or.inl hq",
+            ],
+        )
+        print(result.proof_state)
+    finally:
+        executor.close()

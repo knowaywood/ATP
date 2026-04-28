@@ -1,7 +1,7 @@
 [project]
 name = "atp"
 version = "0.1.0"
-description = "Add your description here"
+description = "A research-oriented Lean ATP framework inspired by Auto-Proving."
 readme = "README.md"
 authors = [
     { name = "Knowaywood", email = "knowaywood@outlook.com" }
@@ -14,20 +14,18 @@ dependencies = [
     "dotenv>=0.9.9",
     "langchain-chroma>=1.1.0",
     "langchain-community>=0.4.1",
+    "langchain-core>=1.2.13",
+    "langchain-google-genai>=2.1.5",
     "langgraph>=1.0.8",
     "lean-explore>=1.2.1",
     "lean-interact>=0.11.1",
-    "mineru-kie-sdk>=0.1.1",
-    "pantograph",
+    "pypdf>=5.5.0",
     "pydantic>=2.12.5",
 ]
 
 [build-system]
 requires = ["uv_build>=0.9.28,<0.10.0"]
 build-backend = "uv_build"
-
-[tool.uv.sources]
-pantograph = { git = "https://github.com/stanford-centaur/PyPantograph" }
 
 [dependency-groups]
 dev = [

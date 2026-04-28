@@ -1,6 +1,7 @@
-"""For Agent."""
+"""Agent builders for the ATP workflow."""
 
-import asyncio
+from __future__ import annotations
+
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -12,31 +13,68 @@ from langgraph.store.memory import InMemoryStore
 
 from atp import config as cfg
 
-Inmemory_store = InMemoryStore()
-leanState = cfg.LeanState()
+INMEMORY_STORE = InMemoryStore()
+lean_state = cfg.LeanState()
+
+
+def _default_init_tools(
+    tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
+) -> list[BaseTool | Callable | dict[str, Any]]:
+    from atp.tools.Search import ddgs_search, search_lean_theorem
+
+    base_tools: list[BaseTool | Callable | dict[str, Any]] = [
+        lean_state.update,
+        search_lean_theorem,
+        ddgs_search,
+    ]
+    if tools is not None:
+        base_tools.extend(tools)
+    return base_tools
 
 
 def init_agent(
     model: str | BaseChatModel,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
 ):
-    """Init agent."""
+    """Build the initialization agent."""
     from langchain.agents import create_agent
 
-    from atp.tools.Search import ddgs_search, search_lean_theorem
-
-    if tools is not None:
-        tools = [leanState.update, search_lean_theorem, ddgs_search, *tools]
-    else:
-        tools = [leanState.update, search_lean_theorem, ddgs_search]
-
-    init_agent = create_agent(
+    return create_agent(
         model=model,
         system_prompt=cfg.INIT_AGENT_PROMPT,
-        store=Inmemory_store,
-        tools=tools,
+        store=INMEMORY_STORE,
+        tools=_default_init_tools(tools),
     )
-    return init_agent
+
+
+def planner_agent(
+    model: str | BaseChatModel,
+    tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
+):
+    """Build the planner agent for proof search proposals."""
+    from langchain.agents import create_agent
+
+    return create_agent(
+        model=model,
+        system_prompt=cfg.PLANNER_AGENT_PROMPT,
+        store=INMEMORY_STORE,
+        tools=list(tools or ()),
+    )
+
+
+def verifier_agent(
+    model: str | BaseChatModel,
+    tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
+):
+    """Build the verifier agent."""
+    from langchain.agents import create_agent
+
+    return create_agent(
+        model=model,
+        system_prompt=cfg.VERIFIER_AGENT_PROMPT,
+        store=INMEMORY_STORE,
+        tools=list(tools or ()),
+    )
 
 
 def main_agent(
@@ -44,74 +82,84 @@ def main_agent(
     subagents: list[SubAgent | CompiledSubAgent] | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
 ):
-    """Agent for taking a atp"""
-
-    main_agent = create_deep_agent(
+    """Build the main deep ATP agent."""
+    return create_deep_agent(
         model=model,
         tools=tools,
-        system_prompt=cfg.MAIN_AGENT_PROMPT,
+        system_prompt=cfg.SUMMARY_AGENT_PROMPT,
         subagents=subagents,
-        store=Inmemory_store,
+        store=INMEMORY_STORE,
         backend=lambda rt: CompositeBackend(
             default=StateBackend(rt),
-            routes={"/memory/": StateBackend(rt), "/search/": StateBackend(rt)},
+            routes={
+                "/memory/": StateBackend(rt),
+                "/search/": StateBackend(rt),
+                "/planner/": StateBackend(rt),
+                "/verifier/": StateBackend(rt),
+            },
         ),
     )
-    return main_agent
 
 
-def search_agent(model: str | BaseChatModel, tools: Sequence[BaseTool] | None = None):
-    """Agent for search from internet and return the answer."""
-    from deepagents.backends import CompositeBackend
+def search_agent(
+    model: str | BaseChatModel,
+    tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
+):
+    """Build a search sub-agent."""
     from deepagents.middleware import FilesystemMiddleware
     from langchain.agents import create_agent
 
-    agent = create_agent(
+    return create_agent(
         model=model,
-        tools=tools,
+        tools=list(tools or ()),
         system_prompt=cfg.SEARCH_AGENT_PROMPT,
         middleware=[
             FilesystemMiddleware(
-                system_prompt="Use this tool to write your Summarize in /search/ dirctory.",
+                system_prompt=(
+                    "Use the filesystem to write concise search notes in /search/."
+                ),
                 backend=lambda rt: CompositeBackend(
                     default=StateBackend(rt),
                     routes={"/search/": StateBackend(rt)},
                 ),
             ),
         ],
-        store=Inmemory_store,
+        store=INMEMORY_STORE,
     )
-    return agent
 
 
-def _sub_search_agent(
-    model: str | BaseChatModel, tools: Sequence[BaseTool] | None = None
-):
-    """Generate subagent which will be used by main agent."""
+def compile_search_subagent(
+    model: str | BaseChatModel,
+    tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
+) -> CompiledSubAgent:
+    """Generate a web or paper search subagent for the main ATP agent."""
     agent_graph = search_agent(model, tools)
-    agent_subgraph = CompiledSubAgent(
-        name="web-search-agent",
-        description="An agent that searches the web for information.and the answer will be written to /search/",
+    return CompiledSubAgent(
+        name="context-search-agent",
+        description=(
+            "Searches the web, papers, and Lean context for ATP-relevant notes "
+            "and writes them to /search/."
+        ),
         runnable=agent_graph,
     )
-    return agent_subgraph
 
 
-if __name__ == "__main__":
-    from pprint import pprint
-
-    from dotenv import load_dotenv
-    from langchain_community.chat_models import ChatTongyi
-
-    from atp.tools.save_memory import save_chat
-
-    load_dotenv()
-    model = ChatTongyi(model="qwen-max")
-    # model = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
-    subagent = _sub_search_agent(model)
-    mainagent = init_agent(model)
-    res = asyncio.run(mainagent.ainvoke({"messages": "费马大定理"}))
-    save_chat("history.json", res)
-
-    pprint(res)
-    pprint(leanState())
+def build_default_atp_stack(
+    model: str | BaseChatModel,
+    *,
+    init_tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
+    planner_tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
+    verifier_tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
+    search_tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build the default research-oriented ATP stack."""
+    compiled_search = compile_search_subagent(model, search_tools)
+    return {
+        "state": lean_state,
+        "stages": cfg.build_stage_configs(),
+        "init": init_agent(model, init_tools),
+        "planner": planner_agent(model, planner_tools),
+        "verifier": verifier_agent(model, verifier_tools),
+        "search": compiled_search,
+        "main": main_agent(model, subagents=[compiled_search]),
+    }

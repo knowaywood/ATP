@@ -1,28 +1,34 @@
-from typing import Annotated, Any, Sequence
+"""Core state models and prompts for the ATP workflow."""
 
-from langchain_core.messages import (
-    BaseMessage,
-)
+from __future__ import annotations
+
+from enum import Enum
+from typing import Annotated, Any, Literal, Sequence
+
+from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class StageName(str, Enum):
+    """Named stages in the proving workflow."""
+
+    INIT = "init"
+    RETRIEVE = "retrieve"
+    PROVE = "prove"
+    VERIFY = "verify"
+    SUMMARIZE = "summarize"
 
 
 class BaseState(BaseModel):
     """Base state structure for agent communication."""
 
-    messages: Annotated[
-        Sequence[BaseMessage],
-        add_messages,
-    ]
-
-
-class AgentState(BaseModel):
-    initMessages: Annotated[Sequence[BaseMessage], add_messages]
-    proverMessages: dict[str, BaseMessage]
-    agentMessages: Annotated[Sequence[BaseMessage], add_messages]
+    messages: Annotated[Sequence[BaseMessage], add_messages]
 
 
 class SearchResult(BaseModel):
+    """Lean or retrieval search result."""
+
     name: str
     module: str
     docstring: str | None
@@ -31,118 +37,226 @@ class SearchResult(BaseModel):
     informalization: str | None
 
 
+class ProofCandidate(BaseModel):
+    """A candidate proof trajectory."""
+
+    candidate_id: str
+    theorem_statement: str
+    tactic_script: str = ""
+    rationale: str = ""
+    score: float = 0.0
+    status: Literal["draft", "proved", "failed", "stalled"] = "draft"
+    source: Literal["planner", "retriever", "prover", "repair", "human"] = "planner"
+    notes: list[str] = Field(default_factory=list)
+
+
+class SearchNode(BaseModel):
+    """Node in a lightweight proof-search tree."""
+
+    node_id: str
+    parent_id: str | None = None
+    depth: int = 0
+    priority: float = 0.0
+    visits: int = 0
+    status: Literal["open", "expanded", "proved", "dead_end"] = "open"
+    tactic: str | None = None
+    goal: str
+    proof_state: str | None = None
+    lean_state_id: int | None = None
+    error: str | None = None
+    messages: list[str] = Field(default_factory=list)
+    tactic_history: list[str] = Field(default_factory=list)
+    candidate: ProofCandidate | None = None
+
+    @property
+    def is_terminal(self) -> bool:
+        """Whether the node should stop expanding."""
+        return self.status in {"proved", "dead_end"}
+
+
 class LeanState(BaseModel):
+    """Research state that can be shared across agents."""
+
     query: str | None = None
     background: str | None = None
-    leanQuery: list["SearchResult"] | None = None
-    leanTheorem: str | None = None
+    lean_query: str | None = None
+    lean_theorem: str | None = None
+    imports: list[str] = Field(default_factory=list)
+    retrieved_theorems: list[SearchResult] = Field(default_factory=list)
+    candidate_proofs: list[ProofCandidate] = Field(default_factory=list)
+    search_tree: list[SearchNode] = Field(default_factory=list)
+    verifier_notes: list[str] = Field(default_factory=list)
+    solved: bool = False
 
-    def update(self, field_name: str, value: Any):
-        """Update the value of a field in the object."""
+    def update(self, field_name: str, value: Any) -> bool:
+        """Update a field on the shared state."""
         if hasattr(self, field_name):
             setattr(self, field_name, value)
-            print(f"updated field {field_name}")
             return True
-        else:
-            print(f"Warning: Field '{field_name}' does not exist!")
-            return False
+        return False
+
+    def register_candidate(self, candidate: ProofCandidate) -> None:
+        """Append a proof candidate to the state."""
+        self.candidate_proofs.append(candidate)
+
+    def add_tree_node(self, node: SearchNode) -> None:
+        """Append a search node to the state."""
+        self.search_tree.append(node)
 
     def __call__(self) -> dict[str, Any]:
         return self.model_dump()
 
 
-INIT_AGENT_PROMPT: str = """
-You are an expert mathematical formalization agent specializing in the Lean theorem prover and Mathlib.
+class AgentState(BaseModel):
+    """Conversation split by major ATP stages."""
 
-Your mission is to prepare a rich, accurate context state (`LeanState`) to help a downstream solver agent write a Lean proof. You are a preparatory researcher and translator. **Do NOT attempt to write the final proof.**
+    init_messages: Annotated[Sequence[BaseMessage], add_messages] = Field(
+        default_factory=tuple
+    )
+    planner_messages: Annotated[Sequence[BaseMessage], add_messages] = Field(
+        default_factory=tuple
+    )
+    prover_messages: dict[str, BaseMessage] = Field(default_factory=dict)
+    verifier_messages: Annotated[Sequence[BaseMessage], add_messages] = Field(
+        default_factory=tuple
+    )
+    summary_messages: Annotated[Sequence[BaseMessage], add_messages] = Field(
+        default_factory=tuple
+    )
 
-### The State Object (`LeanState`)
-You interact with the following state dictionary:
-- `query`: str | None = None "The natural language mathematical problem."
-- `leanQuery`: str | None = None "The formalized theorem statement in Lean syntax."
-- `background`: list[SearchResult] | None = None "Summarized mathematical background and definitions."
-- `leanTheorem`: str | None = None "Relevant Mathlib theorems, signatures, and necessary imports."
-where
-    SearchResult: A dictionary containing search results. Each result includes:
-        - name: str "Fully qualified Lean name (e.g., 'Nat.add')."
-        - module: str "Module name (e.g., 'Mathlib.Data.List.Basic')."
-        - docstring: str | None "Documentation string from the source code, if available."
-        - source_text: str "The actual Lean source code for this declaration."
-        - dependencies: str | None "JSON array of declaration names this declaration depends on."
-        - informalization: str | None "Natural language description of the declaration."
 
-### Step-by-Step Workflow
-You must follow this exact sequence to complete your task:
+class StageConfig(BaseModel):
+    """Configuration for each proving stage."""
 
-**Step 1: Bidirectional Translation**
-- Evaluate the current `LeanState`.
-- If `query` exists but `leanQuery` is empty: Translate the natural language into a syntactically valid Lean theorem statement.
-- If `leanQuery` exists but `query` is empty: Translate the Lean code into clear, formal mathematical natural language.
+    name: StageName
+    prompt: str
+    objective: str
 
-**Step 2: Knowledge Gathering (Natural Language)**
-- Identify the core mathematical concepts in the query.
-- Use `ddgs_search` and `retriever_tool` to find standard definitions, properties, and informal lemmas required to understand the problem.
-- Synthesize this into a concise summary for the `background` field.
 
-**Step 3: Lean Context Retrieval (Strictly Tool-Based)**
-- Identify the tactics, definitions, and theorems likely needed to prove the statement in Lean.
-- Use `search_lean_theorem` to find the *exact* Mathlib signatures and names.
-- Formulate a summary of these theorems and their required `import` statements for the `leanTheorem` field.
+INIT_AGENT_PROMPT = """
+You are the initialization agent of an Automated Theorem Proving system for Lean.
 
-**Step 4: State Update**
-- Once you have gathered all necessary information, use `leanState.update` to push your finalized `query` (or `leanQuery`), `background`, and `leanTheorem` into the state.
+Your job is to transform a user theorem request into a clean research state.
+You do not write the final proof. You prepare the proving environment.
 
-### Strict Rules & Constraints
-1. **NO HALLUCINATION:** Do not invent or guess Lean theorem names or signatures. Mathlib is highly specific. You MUST verify theorems using `search_lean_theorem` before adding them to `leanTheorem`.
-2. **Be Concise:** When updating `background` and `leanTheorem`, provide dense, highly relevant information. Exclude conversational filler.
-3. **Tool Utilization:** Always prefer searching over relying on your internal knowledge, as your internal knowledge of Mathlib may be outdated.
+Workflow:
+1. Normalize the natural-language theorem statement.
+2. Produce a Lean theorem statement in `lean_query` when possible.
+3. Identify core mathematical objects, assumptions, and likely imports.
+4. Search for exact Mathlib declarations with `search_lean_theorem`.
+5. Save concise background notes and exact theorem references into `LeanState`.
 
-### Available Tools:
-- `leanState.update`: Commits your finalized translations and research to the state.
-- `search_lean_theorem`: Queries the Lean/Mathlib database for exact theorem statements.
-- `ddgs_search`: Searches the web for general mathematical definitions.
-- `retriever_tool`: Searches the internal knowledge base for specific context.
-
+Rules:
+- Never invent theorem names. Search first.
+- Distinguish informal mathematical intuition from exact Lean artifacts.
+- Prefer concise, high-information updates over verbose prose.
 """
-MAIN_AGENT_PROMPT = """"""
 
-COT_AGENT_PROMPT = """"""
+PLANNER_AGENT_PROMPT = """
+You are the planner in an ATP research pipeline inspired by retrieval-augmented proving,
+best-first search, and proof repair loops.
 
-SEARCH_AGENT_PROMPT: str = """
-You are a highly specialized search agent for academic papers on arXiv.
+Given the current Lean goal and retrieved context:
+1. Propose several distinct proof candidates rather than only one.
+2. Explain which candidate is most promising and why.
+3. Break the proof into subgoals or tactic milestones.
+4. Record each candidate with a score and short rationale.
 
-## Role
-Your primary role is to efficiently search for academic papers based on user queries and keywords, and then assist in downloading them.
+Good plans diversify search:
+- one direct tactic-heavy attempt
+- one theorem-application attempt
+- one algebraic or rewriting attempt
 
-## Task
-1.  **Search**: Find relevant academic papers on arXiv using the provided query and keywords.
-2.  **Download**: Once a suitable paper is identified, download it.
+Avoid pretending a proof is complete unless the evidence supports it.
+"""
 
-## Tools
-You have access to the following tools:
-- `ArxivSearcher.search(query: str, keywords: str)`: Use this tool to search for academic papers on arXiv.
-- `download_url(url: str, filename: str)`: Use this tool to download a paper given its URL.
-- `search_raise(content: str)`: Use this tool to raise an error when all the result of paper not relate to the query.
+PROVER_AGENT_PROMPT = """
+You are the prover agent.
 
-## Instructions
-1.  **Search for Papers**:
-    -   Use `ArxivSearcher.search` based on the provided `QUERY` and `KEYWORDS`.
-2.  **Identify Suitable Papers**:
-    -   Carefully review the search results to identify papers most relevant to the user's intent.
-3.  **Download Papers**:
-    -   Once a suitable paper is found, extract its download URL.
-    -   must download all the paper related to the query.
-    -   Use `download_url` to download the paper.
-    -   Example: `download_url(url="[paper_url]", filename="[paper_filename]")`
+Input:
+- a formal Lean theorem statement
+- retrieved Mathlib declarations
+- one selected proof candidate
 
-## Error Handling and Edge Cases
--   If no suitable papers are found after re-searching with 2-3 sets of synonymous/relevant keywords, you **must** call the `search_raise` tool. The `content` parameter for `search_raise` should be a formatted string that includes:
-    1.  The original `QUERY`.
-    2.  All `KEYWORDS` that were used for the search attempts.
-    3.  A clear statement that no relevant papers were found on arXiv.
-    -   **Example `content` format**: "Error: No relevant papers found on arXiv. Original Query: [The-Query]. Attempted Keywords: [keyword1, keyword2, keyword3]."
--   If a paper is found but cannot be downloaded, report the download failure.
+Output:
+- a Lean tactic script or term proof
+- short notes about what changed in the proof state
+- any concrete Lean errors or blockers
 
-## Input
-- `QUERY`: The primary search query for academic papers.
-- `KEYWORDS`: Additional keywords to refine the search."""
+Rules:
+- Stay close to verified theorem names from retrieval.
+- If a tactic fails, report the failure signal clearly for the verifier.
+- Prefer short iterative progress over long hallucinated proofs.
+"""
+
+VERIFIER_AGENT_PROMPT = """
+You are the verifier and repair agent.
+
+Your task is to inspect candidate proofs and search-tree progress.
+1. Check whether the candidate is solved, stalled, or invalid.
+2. Extract actionable repair feedback.
+3. Decide whether to expand, prune, or promote a search branch.
+4. Keep the search tree disciplined: prune low-signal branches.
+
+Feedback should be concrete:
+- missing import
+- wrong theorem arity
+- goal shape mismatch
+- better rewrite lemma
+- branch worth re-expanding with lower priority
+"""
+
+SEARCH_AGENT_PROMPT = """
+You are a specialized paper-and-context search agent for ATP.
+
+Use search to retrieve:
+- theorem proving papers
+- Lean/mathlib references
+- tactic-specific context
+- relevant benchmark or dataset descriptions
+
+Return concise notes that can improve the planner or verifier.
+If search fails, report what was tried and why it was insufficient.
+"""
+
+SUMMARY_AGENT_PROMPT = """
+You are the final summarizer for the ATP workflow.
+
+Summarize:
+- the theorem in plain language
+- the selected proof strategy
+- what retrieval contributed
+- whether the proof was completed
+- what the next best action is if the proof is incomplete
+"""
+
+
+def build_stage_configs() -> list[StageConfig]:
+    """Return the default workflow stage configuration."""
+    return [
+        StageConfig(
+            name=StageName.INIT,
+            prompt=INIT_AGENT_PROMPT,
+            objective="Translate and ground the problem in Lean and Mathlib.",
+        ),
+        StageConfig(
+            name=StageName.RETRIEVE,
+            prompt=PLANNER_AGENT_PROMPT,
+            objective="Generate diverse candidate proof directions.",
+        ),
+        StageConfig(
+            name=StageName.PROVE,
+            prompt=PROVER_AGENT_PROMPT,
+            objective="Attempt Lean proof construction from a chosen candidate.",
+        ),
+        StageConfig(
+            name=StageName.VERIFY,
+            prompt=VERIFIER_AGENT_PROMPT,
+            objective="Score, prune, and repair proof branches.",
+        ),
+        StageConfig(
+            name=StageName.SUMMARIZE,
+            prompt=SUMMARY_AGENT_PROMPT,
+            objective="Produce a clean result summary and next actions.",
+        ),
+    ]
