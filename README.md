@@ -25,24 +25,26 @@ flowchart LR
     R --> P
 
     P -->|candidate tactics / plans| S[Search Tree]
-    S --> E[LeanExecutor]
+    S --> PR[Prover]
+    PR -->|attempt next branch| E[LeanExecutor]
     E -->|proof states / errors| V[Verifier]
     V -->|reprioritize / prune / repair| S
 
     E -->|solved branch| O[Proof Result]
     V -->|logs / metrics| B[Benchmark Runner]
 
-    subgraph Python ATP Runtime
+    subgraph runtime[Python ATP Runtime]
         I
         R
         P
         S
+        PR
         E
         V
         B
     end
 
-    subgraph Lean Backend
+    subgraph backend[Lean Backend]
         L[lean-interact + Lean REPL]
     end
 
@@ -55,6 +57,7 @@ The main control loop is:
 - `Retrieval` supplies Lean declarations and external notes
 - `Planner` proposes multiple tactic continuations
 - `Search Tree` tracks active proof branches
+- `Prover` attempts candidate branches one by one
 - `LeanExecutor` runs branches against Lean
 - `Verifier` scores progress and decides what to expand next
 
